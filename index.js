@@ -6,7 +6,7 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT ||3000;
 
 app.use(cors());
 app.use(express.json());
@@ -39,6 +39,9 @@ async function run() {
     const transactionsCollection = db.collection("transactions");
     const newsletterCollection = db.collection("newsletter");
 
+
+
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
@@ -59,6 +62,72 @@ async function run() {
         });
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ==================== USER ROUTES ====================
+    // Create or update user profile
+    app.post('/users', async (req, res) => {
+      try {
+        const { uid, email, displayName, photoURL, provider = 'email' } = req.body;
+
+        if (!uid || !email) {
+          return res.status(400).json({ 
+            success: false,
+            error: 'UID and email are required' 
+          });
+        }
+
+        // Check if user already exists
+        const existingUser = await usersCollection.findOne({ uid });
+
+        if (existingUser) {
+          // Update existing user
+          const updateData = {
+            email,
+            displayName,
+            photoURL,
+            lastLogin: new Date(),
+            updatedAt: new Date()
+          };
+
+          await usersCollection.updateOne({ uid }, { $set: updateData });
+          const updatedUser = await usersCollection.findOne({ uid });
+          
+          return res.json({
+            success: true,
+            message: 'User profile updated successfully',
+            user: updatedUser
+          });
+        } else {
+          // Create new user with default customer role
+          const newUser = {
+            uid,
+            email,
+            displayName: displayName || email.split('@')[0],
+            photoURL: photoURL || null,
+            role: 'customer', // 🎯 This is the key line - automatic customer role
+            provider,
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastLogin: new Date()
+          };
+
+          await usersCollection.insertOne(newUser);
+          
+          return res.status(201).json({
+            success: true,
+            message: 'User created successfully with customer role',
+            user: newUser
+          });
+        }
+      } catch (error) {
+        console.error('Error creating/updating user:', error);
+        res.status(500).json({ 
+          success: false,
+          error: 'Failed to create/update user profile' 
+        });
       }
     });
 
