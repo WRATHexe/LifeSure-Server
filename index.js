@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 dotenv.config();
 
@@ -127,6 +127,174 @@ async function run() {
         res.status(500).json({ 
           success: false,
           error: 'Failed to create/update user profile' 
+        });
+      }
+    });
+
+    // ==================== POLICY CRUD APIs ====================
+    
+    // 1. ADD POLICY (CREATE)
+    app.post('/policies', async (req, res) => {
+      try {
+        const {
+          title,
+          category,
+          description,
+          minAge,
+          maxAge,
+          coverageMin,
+          coverageMax,
+          duration,
+          basePremium,
+          imageUrl
+        } = req.body;
+
+        // Validation
+        if (!title || !category || !description || !minAge || !maxAge || !coverageMin || !coverageMax || !basePremium) {
+          return res.status(400).json({
+            success: false,
+            message: 'All required fields must be provided'
+          });
+        }
+
+        // Create new policy
+        const newPolicy = {
+          title,
+          category,
+          description,
+          minAge: parseInt(minAge),
+          maxAge: parseInt(maxAge),
+          coverageMin: parseFloat(coverageMin),
+          coverageMax: parseFloat(coverageMax),
+          duration: duration || "",
+          basePremium: parseFloat(basePremium),
+          imageUrl: imageUrl || "",
+          applicationsCount: 0,
+        };
+
+        const result = await policiesCollection.insertOne(newPolicy);
+        const createdPolicy = await policiesCollection.findOne({ _id: result.insertedId });
+        
+        res.status(201).json({
+          success: true,
+          message: 'Policy created successfully',
+          policy: createdPolicy
+        });
+
+      } catch (error) {
+        console.error('Error creating policy:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to create policy',
+          error: error.message
+        });
+      }
+    });
+
+    // 2. GET ALL POLICIES (READ)
+    app.get('/policies', async (req, res) => {
+      try {
+        const policies = await policiesCollection
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          policies
+        });
+
+      } catch (error) {
+        console.error('Error fetching policies:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch policies',
+          error: error.message
+        });
+      }
+    });
+
+    // 3. GET SINGLE POLICY (READ)
+    app.get('/policies/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const policy = await policiesCollection.findOne({ 
+          _id: new ObjectId(id)
+        });
+
+      } catch (error) {
+        console.error('Error fetching policy:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch policy',
+          error: error.message
+        });
+      }
+    });
+
+    // 4. EDIT POLICY (UPDATE)
+    app.put('/policies/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updateData = { ...req.body };
+        const result = await policiesCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        const updatedPolicy = await policiesCollection.findOne({ 
+          _id: new ObjectId(id) 
+        });
+
+        res.json({
+          success: true,
+          message: 'Policy updated successfully',
+          policy: updatedPolicy
+        });
+
+      } catch (error) {
+        console.error('Error updating policy:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update policy',
+          error: error.message
+        });
+      }
+    });
+
+    // 5. DELETE POLICY (DELETE)
+    app.delete('/policies/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const result = await policiesCollection.deleteOne({ 
+          _id: new ObjectId(id) 
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        res.json({
+          success: true,
+          message: 'Policy deleted successfully'
+        });
+
+      } catch (error) {
+        console.error('Error deleting policy:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to delete policy',
+          error: error.message
         });
       }
     });
