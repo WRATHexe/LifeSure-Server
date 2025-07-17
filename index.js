@@ -194,13 +194,71 @@ async function run() {
     // 2. GET ALL POLICIES (READ)
     app.get('/policies', async (req, res) => {
       try {
+        const { 
+          search,           // Search in title and category only
+          category,         // Filter by specific category
+          sortBy = 'createdAt', // Sort field
+          sortOrder = 'desc',   // Sort order (asc/desc)
+          page = 1,        // Page number for pagination
+          limit = 10       // Items per page
+        } = req.query;
+
+        // Build dynamic query object
+        let query = {};
+
+        // 🔍 Case-insensitive search ONLY in title and category
+        if (search && search.trim()) {
+          query.$or = [
+            { title: { $regex: search.trim(), $options: 'i' } },
+            { category: { $regex: search.trim(), $options: 'i' } }
+          ];
+        }
+
+        // 📂 Category filter (case-insensitive)
+        if (category && category.trim() && category !== 'all') {
+          query.category = { $regex: `^${category.trim()}$`, $options: 'i' };
+        }
+
+        //  Pagination setup
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 10;
+        const skip = (pageNum - 1) * limitNum;
+
+        // 🔄 Sort setup
+        const sortField = sortBy || 'createdAt';
+        const sortDirection = sortOrder === 'asc' ? 1 : -1;
+        const sortObj = { [sortField]: sortDirection };
+
+        // 📊 Execute query with filters, sorting, and pagination
         const policies = await policiesCollection
-          .sort({ createdAt: -1 })
+          .find(query)
+          .sort(sortObj)
+          .skip(skip)
+          .limit(limitNum)
           .toArray();
 
+        // 📈 Get total count for pagination
+        const totalPolicies = await policiesCollection.countDocuments(query);
+        const totalPages = Math.ceil(totalPolicies / limitNum);
+
+        // 📋 Response with pagination info
         res.json({
           success: true,
-          policies
+          policies,
+          pagination: {
+            currentPage: pageNum,
+            totalPages,
+            totalPolicies,
+            hasNext: pageNum < totalPages,
+            hasPrev: pageNum > 1,
+            limit: limitNum
+          },
+          filters: {
+            search: search || null,
+            category: category || null,
+            sortBy: sortField,
+            sortOrder: sortOrder
+          }
         });
 
       } catch (error) {
@@ -208,6 +266,31 @@ async function run() {
         res.status(500).json({
           success: false,
           message: 'Failed to fetch policies',
+          error: error.message
+        });
+      }
+    });
+
+    // 🔥 TOP POLICIES ENDPOINT (for frontend) - MUST BE BEFORE /:id route
+    app.get('/policies/top-policies', async (req, res) => {
+      try {
+        const policies = await policiesCollection
+          .find({})
+          .sort({ applicationsCount: -1 })
+          .limit(6)
+          .toArray();
+
+        res.json({
+          success: true,
+          message: 'Top policies retrieved successfully',
+          policies
+        });
+
+      } catch (error) {
+        console.error('Error fetching top policies:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch top policies',
           error: error.message
         });
       }
@@ -221,6 +304,18 @@ async function run() {
           _id: new ObjectId(id)
         });
 
+        if (!policy) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        res.json({
+          success: true,
+          policy
+        });
+
       } catch (error) {
         console.error('Error fetching policy:', error);
         res.status(500).json({
@@ -230,6 +325,8 @@ async function run() {
         });
       }
     });
+
+
 
     // 4. EDIT POLICY (UPDATE)
     app.put('/policies/:id', async (req, res) => {
