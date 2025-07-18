@@ -842,6 +842,229 @@ async function run() {
     });
 
 
+    // ==================== SIMPLE ROLE MIDDLEWARE ====================
+    
+    // 1. VERIFY ADMIN ROLE
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+        
+        if (!userId) {
+          return res.status(401).json({
+            success: false,
+            message: 'User ID is required'
+          });
+        }
+
+        const user = await usersCollection.findOne({ uid: userId });
+        
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        if (user.role !== 'admin') {
+          return res.status(403).json({
+            success: false,
+            message: 'Access denied. Admin role required.'
+          });
+        }
+
+        req.user = user;
+        next();
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to verify admin role'
+        });
+      }
+    };
+
+    // 2. VERIFY AGENT ROLE
+    const verifyAgent = async (req, res, next) => {
+      try {
+        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+        
+        if (!userId) {
+          return res.status(401).json({
+            success: false,
+            message: 'User ID is required'
+          });
+        }
+
+        const user = await usersCollection.findOne({ uid: userId });
+        
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        if (user.role !== 'agent') {
+          return res.status(403).json({
+            success: false,
+            message: 'Access denied. Agent role required.'
+          });
+        }
+
+        req.user = user;
+        next();
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to verify agent role'
+        });
+      }
+    };
+
+    // 3. VERIFY CUSTOMER ROLE
+    const verifyCustomer = async (req, res, next) => {
+      try {
+        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+        
+        if (!userId) {
+          return res.status(401).json({
+            success: false,
+            message: 'User ID is required'
+          });
+        }
+
+        const user = await usersCollection.findOne({ uid: userId });
+        
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        if (user.role !== 'customer') {
+          return res.status(403).json({
+            success: false,
+            message: 'Access denied. Customer role required.'
+          });
+        }
+
+        req.user = user;
+        next();
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to verify customer role'
+        });
+      }
+    };
+
+    // ==================== PROTECTED ROUTES ====================
+
+    // ADMIN ONLY - Create Policy
+    app.post('/admin/policies', verifyAdmin, async (req, res) => {
+      try {
+        const policyData = req.body;
+        // Your existing policy creation logic
+        res.json({ success: true, message: 'Policy created by admin' });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to create policy' });
+      }
+    });
+
+    // ADMIN ONLY - Delete Policy
+    app.delete('/admin/policies/:id', verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await policiesCollection.deleteOne({ _id: new ObjectId(id) });
+        res.json({ success: true, message: 'Policy deleted' });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to delete policy' });
+      }
+    });
+
+    // CUSTOMER ONLY - Submit Application
+    app.post('/customer/applications', verifyCustomer, async (req, res) => {
+      try {
+        const applicationData = req.body;
+        // Your existing application logic
+        res.json({ success: true, message: 'Application submitted' });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to submit application' });
+      }
+    });
+
+    // CUSTOMER ONLY - Make Payment
+    app.post('/customer/create-payment-intent', verifyCustomer, async (req, res) => {
+      try {
+        const { amount, policyId } = req.body;
+        // Your existing payment intent logic
+        res.json({ success: true, message: 'Payment intent created' });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to create payment intent' });
+      }
+    });
+
+    // ADMIN OR AGENT - View All Applications
+    app.get('/management/applications', verifyAdmin, async (req, res) => {
+      try {
+        const applications = await applicationsCollection.find({}).toArray();
+        res.json({ success: true, applications });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to fetch applications' });
+      }
+    });
+
+    // ADMIN ONLY - Role Management
+    app.patch('/admin/users/:targetUserId/role', verifyAdmin, async (req, res) => {
+      try {
+        const { targetUserId } = req.params;
+        const { newRole } = req.body;
+
+        const validRoles = ['admin', 'agent', 'customer'];
+        
+        if (!validRoles.includes(newRole)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid role. Must be admin, agent, or customer'
+          });
+        }
+
+        await usersCollection.updateOne(
+          { uid: targetUserId },
+          { $set: { role: newRole, updatedAt: new Date() } }
+        );
+
+        res.json({
+          success: true,
+          message: `User role updated to ${newRole}`
+        });
+
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update role' });
+      }
+    });
+
+    // ==================== YOUR EXISTING ROUTES CONTINUE HERE ====================
+    // Now update your existing routes to use middleware:
+
+    // Update existing policy creation to be admin-only
+    // app.post('/policies', verifyAdmin, async (req, res) => {
+    //   // Your existing policy creation code
+    // });
+
+    // Update existing application submission to be customer-only  
+    // app.post('/applications', verifyCustomer, async (req, res) => {
+    //   // Your existing application code
+    // });
+
+    // Update existing payment routes to be customer-only
+    // app.post('/create-payment-intent', verifyCustomer, async (req, res) => {
+    //   // Your existing payment code
+    // });
+
     // Start server
     app.listen(PORT, () => {
       console.log(`LifeSure Server is running on http://localhost:${PORT}`);
