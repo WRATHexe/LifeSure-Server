@@ -1,9 +1,8 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
-dotenv.config();
 
 const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
@@ -23,6 +22,133 @@ const client = new MongoClient(uri, {
   }
 });
 
+ 
+
+// ==================== GLOBAL VARIABLES FOR COLLECTIONS ====================
+let usersCollection, policiesCollection, applicationsCollection, 
+    blogsCollection, reviewsCollection, transactionsCollection, 
+    newsletterCollection, paymentsCollection;
+
+// ==================== SIMPLE ROLE MIDDLEWARE ====================
+
+// 1. VERIFY ADMIN ROLE
+const verifyAdmin = async (req, res, next) => {
+  try {
+    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    const user = await usersCollection.findOne({ uid: userId });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin role required.'
+      });
+    }
+
+    req.user = user;
+    next();
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify admin role'
+    });
+  }
+};
+
+// 2. VERIFY AGENT ROLE
+const verifyAgent = async (req, res, next) => {
+  try {
+    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    const user = await usersCollection.findOne({ uid: userId });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.role !== 'agent') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Agent role required.'
+      });
+    }
+
+    req.user = user;
+    next();
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify agent role'
+    });
+  }
+};
+
+// 3. VERIFY CUSTOMER ROLE
+const verifyCustomer = async (req, res, next) => {
+  try {
+    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User ID is required'
+      });
+    }
+
+    const user = await usersCollection.findOne({ uid: userId });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.role !== 'customer') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Customer role required.'
+      });
+    }
+
+    req.user = user;
+    next();
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify customer role'
+    });
+  }
+};
+
+
 async function run() {
   try {
     // Connect the client to the server
@@ -31,15 +157,15 @@ async function run() {
     // Get the database
     const db = client.db("LifeSureDB");
     
-    // Define collections
-    const usersCollection = db.collection("users");
-    const policiesCollection = db.collection("policies");
-    const applicationsCollection = db.collection("applications");
-    const blogsCollection = db.collection("blogs");
-    const reviewsCollection = db.collection("reviews");
-    const transactionsCollection = db.collection("transactions");
-    const newsletterCollection = db.collection("newsletter");
-    const paymentsCollection = db.collection("payments");
+    // ✅ ASSIGN COLLECTIONS TO GLOBAL VARIABLES (ADD THIS)
+    usersCollection = db.collection("users");
+    policiesCollection = db.collection("policies");
+    applicationsCollection = db.collection("applications");
+    blogsCollection = db.collection("blogs");
+    reviewsCollection = db.collection("reviews");
+    transactionsCollection = db.collection("transactions");
+    newsletterCollection = db.collection("newsletter");
+    paymentsCollection = db.collection("payments");
 
 
 
@@ -842,135 +968,51 @@ async function run() {
     });
 
 
-    // ==================== SIMPLE ROLE MIDDLEWARE ====================
-    
-    // 1. VERIFY ADMIN ROLE
-    const verifyAdmin = async (req, res, next) => {
-      try {
-        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-        
-        if (!userId) {
-          return res.status(401).json({
-            success: false,
-            message: 'User ID is required'
-          });
-        }
-
-        const user = await usersCollection.findOne({ uid: userId });
-        
-        if (!user) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-
-        if (user.role !== 'admin') {
-          return res.status(403).json({
-            success: false,
-            message: 'Access denied. Admin role required.'
-          });
-        }
-
-        req.user = user;
-        next();
-
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to verify admin role'
-        });
-      }
-    };
-
-    // 2. VERIFY AGENT ROLE
-    const verifyAgent = async (req, res, next) => {
-      try {
-        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-        
-        if (!userId) {
-          return res.status(401).json({
-            success: false,
-            message: 'User ID is required'
-          });
-        }
-
-        const user = await usersCollection.findOne({ uid: userId });
-        
-        if (!user) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-
-        if (user.role !== 'agent') {
-          return res.status(403).json({
-            success: false,
-            message: 'Access denied. Agent role required.'
-          });
-        }
-
-        req.user = user;
-        next();
-
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to verify agent role'
-        });
-      }
-    };
-
-    // 3. VERIFY CUSTOMER ROLE
-    const verifyCustomer = async (req, res, next) => {
-      try {
-        const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-        
-        if (!userId) {
-          return res.status(401).json({
-            success: false,
-            message: 'User ID is required'
-          });
-        }
-
-        const user = await usersCollection.findOne({ uid: userId });
-        
-        if (!user) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-
-        if (user.role !== 'customer') {
-          return res.status(403).json({
-            success: false,
-            message: 'Access denied. Customer role required.'
-          });
-        }
-
-        req.user = user;
-        next();
-
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to verify customer role'
-        });
-      }
-    };
-
-    // ==================== PROTECTED ROUTES ====================
+    // ==================== UPDATED PROTECTED ROUTES ====================
 
     // ADMIN ONLY - Create Policy
     app.post('/admin/policies', verifyAdmin, async (req, res) => {
       try {
         const policyData = req.body;
-        // Your existing policy creation logic
-        res.json({ success: true, message: 'Policy created by admin' });
+
+        const required = ['title', 'category', 'description', 'minAge', 'maxAge', 'coverageMin', 'coverageMax', 'basePremium'];
+        const missing = required.filter(field => !policyData[field]);
+        
+        if (missing.length > 0) {
+          return res.status(400).json({
+            success: false,
+            message: `Missing required fields: ${missing.join(', ')}`
+          });
+        }
+
+        const newPolicy = {
+          ...policyData,
+          minAge: parseInt(policyData.minAge),
+          maxAge: parseInt(policyData.maxAge),
+          coverageMin: parseFloat(policyData.coverageMin),
+          coverageMax: parseFloat(policyData.coverageMax),
+          basePremium: parseFloat(policyData.basePremium),
+          duration: policyData.duration || "",
+          imageUrl: policyData.imageUrl || "",
+          applicationsCount: 0,
+          createdBy: req.user.uid,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await policiesCollection.insertOne(newPolicy);
+        
+        res.status(201).json({
+          success: true,
+          message: 'Policy created successfully by admin',
+          policy: { ...newPolicy, _id: result.insertedId }
+        });
+
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to create policy' });
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to create policy' 
+        });
       }
     });
 
@@ -979,41 +1021,128 @@ async function run() {
       try {
         const { id } = req.params;
         const result = await policiesCollection.deleteOne({ _id: new ObjectId(id) });
-        res.json({ success: true, message: 'Policy deleted' });
+        
+        if (result.deletedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        res.json({ 
+          success: true, 
+          message: 'Policy deleted successfully by admin' 
+        });
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to delete policy' });
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to delete policy' 
+        });
       }
     });
 
-    // CUSTOMER ONLY - Submit Application
-    app.post('/customer/applications', verifyCustomer, async (req, res) => {
+    // ADMIN ONLY - Update Policy
+    app.put('/admin/policies/:id', verifyAdmin, async (req, res) => {
       try {
-        const applicationData = req.body;
-        // Your existing application logic
-        res.json({ success: true, message: 'Application submitted' });
+        const { id } = req.params;
+        const updateData = { 
+          ...req.body,
+          updatedAt: new Date(),
+          updatedBy: req.user.uid
+        };
+        
+        const result = await policiesCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        const updatedPolicy = await policiesCollection.findOne({ 
+          _id: new ObjectId(id) 
+        });
+
+        res.json({
+          success: true,
+          message: 'Policy updated successfully by admin',
+          policy: updatedPolicy
+        });
+
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to submit application' });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update policy'
+        });
       }
     });
 
-    // CUSTOMER ONLY - Make Payment
-    app.post('/customer/create-payment-intent', verifyCustomer, async (req, res) => {
+    // ADMIN ONLY - View All Applications
+    app.get('/admin/applications', verifyAdmin, async (req, res) => {
       try {
-        const { amount, policyId } = req.body;
-        // Your existing payment intent logic
-        res.json({ success: true, message: 'Payment intent created' });
+        const applications = await applicationsCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({ 
+          success: true, 
+          applications,
+          message: 'All applications fetched by admin'
+        });
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to create payment intent' });
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to fetch applications' 
+        });
       }
     });
 
-    // ADMIN OR AGENT - View All Applications
-    app.get('/management/applications', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - View All Payments
+    app.get('/admin/payments', verifyAdmin, async (req, res) => {
       try {
-        const applications = await applicationsCollection.find({}).toArray();
-        res.json({ success: true, applications });
+        const payments = await paymentsCollection
+          .find({})
+          .sort({ paymentDate: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          payments,
+          message: 'All payments fetched by admin'
+        });
+
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to fetch applications' });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch payments'
+        });
+      }
+    });
+
+    // ADMIN ONLY - View All Users
+    app.get('/admin/users', verifyAdmin, async (req, res) => {
+      try {
+        const users = await usersCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          users,
+          message: 'All users fetched by admin'
+        });
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch users'
+        });
       }
     });
 
@@ -1032,38 +1161,178 @@ async function run() {
           });
         }
 
-        await usersCollection.updateOne(
+        const result = await usersCollection.updateOne(
           { uid: targetUserId },
-          { $set: { role: newRole, updatedAt: new Date() } }
+          { 
+            $set: { 
+              role: newRole, 
+              updatedAt: new Date(),
+              updatedBy: req.user.uid
+            } 
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        res.json({
+          success: true,
+          message: `User role updated to ${newRole} by admin`
+        });
+
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to update role' 
+        });
+      }
+    });
+
+    // CUSTOMER ONLY - Submit Application
+    app.post('/customer/applications', verifyCustomer, async (req, res) => {
+      try {
+        const applicationData = req.body;
+        
+        if (!applicationData.policyId) {
+          return res.status(400).json({
+            success: false,
+            message: 'Policy ID is required'
+          });
+        }
+
+        const policy = await policiesCollection.findOne({ 
+          _id: new ObjectId(applicationData.policyId) 
+        });
+        
+        if (!policy) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        const newApplication = {
+          ...applicationData,
+          userId: req.user.uid, // From middleware
+          policyId: new ObjectId(applicationData.policyId),
+          submittedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await applicationsCollection.insertOne(newApplication);
+        
+        await policiesCollection.updateOne(
+          { _id: new ObjectId(applicationData.policyId) },
+          { $inc: { applicationsCount: 1 } }
+        );
+
+        res.status(201).json({
+          success: true,
+          message: 'Application submitted successfully by customer',
+          application: { ...newApplication, _id: result.insertedId }
+        });
+
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to submit application' 
+        });
+      }
+    });
+
+    // CUSTOMER ONLY - Create Payment Intent
+    app.post('/customer/create-payment-intent', verifyCustomer, async (req, res) => {
+      try {
+        const { amount, policyId } = req.body;
+        
+        if (!amount || !policyId) {
+          return res.status(400).json({
+            success: false,
+            message: 'Amount and Policy ID are required'
+          });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(amount * 100),
+          currency: 'usd',
+          metadata: {
+            policyId,
+            userId: req.user.uid
+          }
+        });
+
+        res.json({
+          success: true,
+          message: 'Payment intent created for customer',
+          clientSecret: paymentIntent.client_secret,
+          paymentIntentId: paymentIntent.id
+        });
+
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to create payment intent' 
+        });
+      }
+    });
+
+    // CUSTOMER ONLY - Get Own Applications
+    app.get('/customer/applications', verifyCustomer, async (req, res) => {
+      try {
+        const applications = await applicationsCollection
+          .find({ userId: req.user.uid })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const applicationsWithPolicy = await Promise.all(
+          applications.map(async (app) => {
+            const policy = await policiesCollection.findOne({ _id: app.policyId });
+            return {
+              ...app,
+              policy: policy || null,
+              policyName: policy?.title || 'Unknown Policy'
+            };
+          })
         );
 
         res.json({
           success: true,
-          message: `User role updated to ${newRole}`
+          applications: applicationsWithPolicy
         });
 
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to update role' });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch customer applications'
+        });
       }
     });
 
-    // ==================== YOUR EXISTING ROUTES CONTINUE HERE ====================
-    // Now update your existing routes to use middleware:
+    // CUSTOMER ONLY - Get Own Payments
+    app.get('/customer/payments', verifyCustomer, async (req, res) => {
+      try {
+        const payments = await paymentsCollection
+          .find({ userId: req.user.uid })
+          .sort({ paymentDate: -1 })
+          .toArray();
 
-    // Update existing policy creation to be admin-only
-    // app.post('/policies', verifyAdmin, async (req, res) => {
-    //   // Your existing policy creation code
-    // });
+        res.json({
+          success: true,
+          payments
+        });
 
-    // Update existing application submission to be customer-only  
-    // app.post('/applications', verifyCustomer, async (req, res) => {
-    //   // Your existing application code
-    // });
-
-    // Update existing payment routes to be customer-only
-    // app.post('/create-payment-intent', verifyCustomer, async (req, res) => {
-    //   // Your existing payment code
-    // });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch customer payments'
+        });
+      }
+    });
 
     // Start server
     app.listen(PORT, () => {
