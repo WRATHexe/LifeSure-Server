@@ -603,6 +603,64 @@ async function run() {
       }
     });
 
+    // ==================== USER PROFILE ROUTES ====================
+    
+    // 1. GET USER PROFILE
+    app.get('/users/:uid', async (req, res) => {
+      try {
+        const user = await usersCollection.findOne({ uid: req.params.uid });
+        
+        if (!user) {
+          return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        res.json({ success: true, user });
+
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to fetch user' });
+      }
+    });
+
+    // 2. UPDATE USER PROFILE (Super Simple)
+    app.patch('/users/:uid/profile', async (req, res) => {
+      try {
+        const { displayName, photoURL } = req.body;
+
+        if (!displayName?.trim()) {
+          return res.status(400).json({ success: false, message: 'Name is required' });
+        }
+
+        await usersCollection.updateOne(
+          { uid: req.params.uid },
+          { $set: { displayName: displayName.trim(), photoURL, updatedAt: new Date() } }
+        );
+
+        const user = await usersCollection.findOne({ uid: req.params.uid });
+
+        res.json({ success: true, message: 'Profile updated', user });
+
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Update failed' });
+      }
+    });
+
+    // 3. UPDATE LAST LOGIN
+    app.patch('/users/:uid/last-login', async (req, res) => {
+      try {
+        await usersCollection.updateOne(
+          { uid: req.params.uid },
+          { $set: { lastLogin: new Date() } }
+        );
+
+        res.json({ success: true, message: 'Last login updated' });
+
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update' });
+      }
+    });
+
+
+
     // Start server
     app.listen(PORT, () => {
       console.log(`LifeSure Server is running on http://localhost:${PORT}`);

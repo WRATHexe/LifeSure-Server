@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@stripe/react-stripe-js": "^3.7.0",
+    "@stripe/stripe-js": "^7.5.0",
     "@tanstack/react-query-devtools": "^5.83.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.0",
