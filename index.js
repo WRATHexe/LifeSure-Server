@@ -136,49 +136,40 @@ async function run() {
     // 1. ADD POLICY (CREATE)
     app.post('/policies', async (req, res) => {
       try {
-        const {
-          title,
-          category,
-          description,
-          minAge,
-          maxAge,
-          coverageMin,
-          coverageMax,
-          duration,
-          basePremium,
-          imageUrl
-        } = req.body;
+        const policyData = req.body;
 
-        // Validation
-        if (!title || !category || !description || !minAge || !maxAge || !coverageMin || !coverageMax || !basePremium) {
+        // Simple validation - just check required fields
+        const required = ['title', 'category', 'description', 'minAge', 'maxAge', 'coverageMin', 'coverageMax', 'basePremium'];
+        const missing = required.filter(field => !policyData[field]);
+        
+        if (missing.length > 0) {
           return res.status(400).json({
             success: false,
-            message: 'All required fields must be provided'
+            message: `Missing required fields: ${missing.join(', ')}`
           });
         }
 
-        // Create new policy
+        // Create new policy with defaults
         const newPolicy = {
-          title,
-          category,
-          description,
-          minAge: parseInt(minAge),
-          maxAge: parseInt(maxAge),
-          coverageMin: parseFloat(coverageMin),
-          coverageMax: parseFloat(coverageMax),
-          duration: duration || "",
-          basePremium: parseFloat(basePremium),
-          imageUrl: imageUrl || "",
+          ...policyData,
+          minAge: parseInt(policyData.minAge),
+          maxAge: parseInt(policyData.maxAge),
+          coverageMin: parseFloat(policyData.coverageMin),
+          coverageMax: parseFloat(policyData.coverageMax),
+          basePremium: parseFloat(policyData.basePremium),
+          duration: policyData.duration || "",
+          imageUrl: policyData.imageUrl || "",
           applicationsCount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date()
         };
 
         const result = await policiesCollection.insertOne(newPolicy);
-        const createdPolicy = await policiesCollection.findOne({ _id: result.insertedId });
         
         res.status(201).json({
           success: true,
           message: 'Policy created successfully',
-          policy: createdPolicy
+          policy: { ...newPolicy, _id: result.insertedId }
         });
 
       } catch (error) {
@@ -401,11 +392,8 @@ async function run() {
       try {
         const applicationData = req.body;
         
-        // Extract basic required fields
-        const { userId, policyId } = applicationData;
-        
-        // Validate required fields
-        if (!userId || !policyId) {
+        // Simple validation - just check if required data exists
+        if (!applicationData.userId || !applicationData.policyId) {
           return res.status(400).json({
             success: false,
             message: 'User ID and Policy ID are required'
@@ -413,7 +401,10 @@ async function run() {
         }
 
         // Check if policy exists
-        const policy = await policiesCollection.findOne({ _id: new ObjectId(policyId) });
+        const policy = await policiesCollection.findOne({ 
+          _id: new ObjectId(applicationData.policyId) 
+        });
+        
         if (!policy) {
           return res.status(404).json({
             success: false,
@@ -421,58 +412,21 @@ async function run() {
           });
         }
 
-        // Create new application
+        // Simply store the entire application data as received from frontend
         const newApplication = {
-          userId,
-          policyId: new ObjectId(policyId),
-          
-          // Personal Information
-          personalInfo: {
-            fullName: applicationData.personalInfo.fullName,
-            email: applicationData.personalInfo.email,
-            phone: applicationData.personalInfo.phone,
-            dateOfBirth: applicationData.personalInfo.dateOfBirth,
-            gender: applicationData.personalInfo.gender,
-            occupation: applicationData.personalInfo.occupation,
-            monthlyIncome: parseFloat(applicationData.personalInfo.monthlyIncome || 0),
-            address: applicationData.personalInfo.address,
-            nidOrSSN: applicationData.personalInfo.nidOrSSN
-          },
-          
-          // Nominee Information
-          nomineeInfo: {
-            fullName: applicationData.nomineeInfo.fullName,
-            relationship: applicationData.nomineeInfo.relationship,
-            phone: applicationData.nomineeInfo.phone,
-            address: applicationData.nomineeInfo.address
-          },
-          
-          // Health Disclosure
-          healthDisclosure: {
-            conditions: applicationData.healthDisclosure?.conditions || [],
-            smoking: applicationData.healthDisclosure?.smoking || false,
-            drinking: applicationData.healthDisclosure?.drinking || false,
-            additionalInfo: applicationData.healthDisclosure?.additionalInfo || ""
-          },
-          
-          // Declarations
-          declarations: {
-            truthfulInfo: applicationData.declarations.truthfulInfo,
-            termsAccepted: applicationData.declarations.termsAccepted
-          },
-          
-          // Application metadata
-          status: 'Pending', // Match frontend expectation
+          ...applicationData,  // This includes all form data
+          policyId: new ObjectId(applicationData.policyId),
           submittedAt: new Date(),
           createdAt: new Date(),
           updatedAt: new Date()
         };
 
+        // Insert application
         const result = await applicationsCollection.insertOne(newApplication);
         
-        // Update policy applications count
+        // Update policy count
         await policiesCollection.updateOne(
-          { _id: new ObjectId(policyId) },
+          { _id: new ObjectId(applicationData.policyId) },
           { $inc: { applicationsCount: 1 } }
         );
 
@@ -481,7 +435,8 @@ async function run() {
           message: 'Application submitted successfully',
           application: { ...newApplication, _id: result.insertedId }
         });
-      } catch {
+
+      } catch (error) { // ✅ Fixed: Added error parameter
         console.error('Error submitting application:', error);
         res.status(500).json({
           success: false,
@@ -490,7 +445,163 @@ async function run() {
         });
       }
     });
-    // Get all applications for a user
+    
+    // GET all applications (for admin)
+    app.get('/applications', async (req, res) => {
+      try {
+        const applications = await applicationsCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({
+          success: true,
+          applications
+        });
+
+      } catch (error) {
+        console.error('Error fetching applications:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch applications',
+          error: error.message
+        });
+      }
+    });
+    
+    // GET applications for a specific user
+    app.get('/applications/user/:userId', async (req, res) => {
+      try {
+        const { userId } = req.params;
+        
+        const applications = await applicationsCollection
+          .find({ userId })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // Get policy details for each application
+        const applicationsWithPolicy = await Promise.all(
+          applications.map(async (app) => {
+            const policy = await policiesCollection.findOne({ _id: app.policyId });
+            return {
+              ...app,
+              policy: policy || null,
+              policyName: policy?.title || 'Unknown Policy',
+              premium: policy?.basePremium || null,
+              coverageAmount: policy?.coverageMax || null,
+              duration: policy?.duration || null
+            };
+          })
+        );
+
+        res.json({
+          success: true,
+          applications: applicationsWithPolicy
+        });
+
+      } catch (error) {
+        console.error('Error fetching user applications:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch applications',
+          error: error.message
+        });
+      }
+    });
+
+    // ==================== REVIEW ROUTES ====================
+    // Submit review for a policy
+    app.post('/reviews', async (req, res) => {
+      try {
+        const reviewData = req.body;
+        
+        // Validation
+        if (!reviewData.rating || !reviewData.feedback || !reviewData.policyId || !reviewData.userId) {
+          return res.status(400).json({
+            success: false,
+            message: 'Rating, feedback, policy ID, and user ID are required'
+          });
+        }
+
+        if (reviewData.rating < 1 || reviewData.rating > 5) {
+          return res.status(400).json({
+            success: false,
+            message: 'Rating must be between 1 and 5'
+          });
+        }
+
+        // Check if user already reviewed this policy
+        const existingReview = await reviewsCollection.findOne({
+          userId: reviewData.userId,
+          policyId: reviewData.policyId
+        });
+
+        if (existingReview) {
+          return res.status(400).json({
+            success: false,
+            message: 'You have already reviewed this policy'
+          });
+        }
+
+        // Create new review
+        const newReview = {
+          ...reviewData,
+          policyId: new ObjectId(reviewData.policyId),
+          rating: parseInt(reviewData.rating),
+          isApproved: true,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await reviewsCollection.insertOne(newReview);
+
+        res.status(201).json({
+          success: true,
+          message: 'Review submitted successfully',
+          review: { ...newReview, _id: result.insertedId }
+        });
+
+      } catch (error) {
+        console.error('Error submitting review:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to submit review',
+          error: error.message
+        });
+      }
+    });
+
+    // GET all reviews (for display on website)
+    app.get('/reviews', async (req, res) => {
+      try {
+        const { policyId, limit = 10 } = req.query;
+        
+        let query = { isApproved: true };
+        
+        if (policyId) {
+          query.policyId = new ObjectId(policyId);
+        }
+
+        const reviews = await reviewsCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .limit(parseInt(limit))
+          .toArray();
+
+        res.json({
+          success: true,
+          reviews
+        });
+
+      } catch (error) {
+        console.error('Error fetching reviews:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch reviews',
+          error: error.message
+        });
+      }
+    });
 
     // Start server
     app.listen(PORT, () => {
