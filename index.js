@@ -396,6 +396,102 @@ async function run() {
       }
     });
 
+    // ==================== APPLICATION ROUTES ====================
+    app.post('/applications', async (req, res) => {
+      try {
+        const applicationData = req.body;
+        
+        // Extract basic required fields
+        const { userId, policyId } = applicationData;
+        
+        // Validate required fields
+        if (!userId || !policyId) {
+          return res.status(400).json({
+            success: false,
+            message: 'User ID and Policy ID are required'
+          });
+        }
+
+        // Check if policy exists
+        const policy = await policiesCollection.findOne({ _id: new ObjectId(policyId) });
+        if (!policy) {
+          return res.status(404).json({
+            success: false,
+            message: 'Policy not found'
+          });
+        }
+
+        // Create new application
+        const newApplication = {
+          userId,
+          policyId: new ObjectId(policyId),
+          
+          // Personal Information
+          personalInfo: {
+            fullName: applicationData.personalInfo.fullName,
+            email: applicationData.personalInfo.email,
+            phone: applicationData.personalInfo.phone,
+            dateOfBirth: applicationData.personalInfo.dateOfBirth,
+            gender: applicationData.personalInfo.gender,
+            occupation: applicationData.personalInfo.occupation,
+            monthlyIncome: parseFloat(applicationData.personalInfo.monthlyIncome || 0),
+            address: applicationData.personalInfo.address,
+            nidOrSSN: applicationData.personalInfo.nidOrSSN
+          },
+          
+          // Nominee Information
+          nomineeInfo: {
+            fullName: applicationData.nomineeInfo.fullName,
+            relationship: applicationData.nomineeInfo.relationship,
+            phone: applicationData.nomineeInfo.phone,
+            address: applicationData.nomineeInfo.address
+          },
+          
+          // Health Disclosure
+          healthDisclosure: {
+            conditions: applicationData.healthDisclosure?.conditions || [],
+            smoking: applicationData.healthDisclosure?.smoking || false,
+            drinking: applicationData.healthDisclosure?.drinking || false,
+            additionalInfo: applicationData.healthDisclosure?.additionalInfo || ""
+          },
+          
+          // Declarations
+          declarations: {
+            truthfulInfo: applicationData.declarations.truthfulInfo,
+            termsAccepted: applicationData.declarations.termsAccepted
+          },
+          
+          // Application metadata
+          status: 'Pending', // Match frontend expectation
+          submittedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        const result = await applicationsCollection.insertOne(newApplication);
+        
+        // Update policy applications count
+        await policiesCollection.updateOne(
+          { _id: new ObjectId(policyId) },
+          { $inc: { applicationsCount: 1 } }
+        );
+
+        res.status(201).json({
+          success: true,
+          message: 'Application submitted successfully',
+          application: { ...newApplication, _id: result.insertedId }
+        });
+      } catch {
+        console.error('Error submitting application:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to submit application',
+          error: error.message
+        });
+      }
+    });
+    // Get all applications for a user
+
     // Start server
     app.listen(PORT, () => {
       console.log(`LifeSure Server is running on http://localhost:${PORT}`);
