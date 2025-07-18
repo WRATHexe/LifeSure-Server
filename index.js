@@ -174,7 +174,7 @@ const verifyCustomer = async (req, res, next) => {
 async function run() {
   try {
     // Connect the client to the server
-    await client.connect();
+    // await client.connect();
     
     // Get the database
     const db = client.db("LifeSureDB");
@@ -194,8 +194,8 @@ async function run() {
 
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    // await client.db("admin").command({ ping: 1 });
+    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
     // Basic route
     app.get('/', (req, res) => {
