@@ -5,6 +5,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 dotenv.config();
 
+const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
 const PORT = process.env.PORT ||3000;
 
@@ -38,7 +39,7 @@ async function run() {
     const reviewsCollection = db.collection("reviews");
     const transactionsCollection = db.collection("transactions");
     const newsletterCollection = db.collection("newsletter");
-
+    const paymentsCollection = db.collection("payments");
 
 
 
@@ -659,6 +660,186 @@ async function run() {
       }
     });
 
+    // ==================== STRIPE PAYMENT ROUTES ====================
+    
+    // 1. CREATE PAYMENT INTENT
+    app.post('/create-payment-intent', async (req, res) => {
+      try {
+        const { amount, policyId, userId } = req.body;
+        
+        if (!amount || !policyId || !userId) {
+          return res.status(400).json({
+            success: false,
+            message: 'Amount, Policy ID, and User ID are required'
+          });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(amount * 100), // Convert to cents
+          currency: 'usd',
+          metadata: {
+            policyId,
+            userId
+          }
+        });
+
+        res.json({
+          success: true,
+          clientSecret: paymentIntent.client_secret,
+          paymentIntentId: paymentIntent.id
+        });
+
+      } catch (error) {
+        console.error('Error creating payment intent:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to create payment intent',
+          error: error.message
+        });
+      }
+    });
+
+    // 2. CONFIRM PAYMENT (called after successful Stripe payment)
+    app.post('/confirm-payment', async (req, res) => {
+      try {
+        const { 
+          paymentIntentId, 
+          policyId, 
+          userId, 
+          amount 
+        } = req.body;
+
+        if (!paymentIntentId || !policyId || !userId || !amount) {
+          return res.status(400).json({
+            success: false,
+            message: 'Missing required payment information'
+          });
+        }
+
+        // Create payment record in database
+        const paymentRecord = {
+          paymentIntentId,
+          userId,
+          policyId: new ObjectId(policyId),
+          amount: parseFloat(amount),
+          currency: 'usd',
+          status: 'completed',
+          transactionId: `tx_${Date.now()}`,
+          paymentDate: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        // Insert payment record
+        const result = await db.collection('payments').insertOne(paymentRecord);
+
+        res.json({
+          success: true,
+          message: 'Payment confirmed successfully',
+          payment: { ...paymentRecord, _id: result.insertedId }
+        });
+
+      } catch (error) {
+        console.error('Error confirming payment:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to confirm payment',
+          error: error.message
+        });
+      }
+    });
+
+    // 3. GET USER PAYMENTS (for payment history)
+    app.get('/payments/user/:userId', async (req, res) => {
+      try {
+        const { userId } = req.params;
+        const { page = 1, limit = 10 } = req.query;
+
+        const pageNum = parseInt(page);
+        const limitNum = parseInt(limit);
+        const skip = (pageNum - 1) * limitNum;
+
+        // Get payments from payments collection
+        const payments = await db.collection('payments')
+          .find({ userId })
+          .sort({ paymentDate: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray();
+
+        // Get policy details for each payment
+        const paymentsWithPolicyDetails = await Promise.all(
+          payments.map(async (payment) => {
+            const policy = await policiesCollection.findOne({ _id: payment.policyId });
+            return {
+              ...payment,
+              policy: policy || null,
+              policyName: policy?.title || 'Unknown Policy'
+            };
+          })
+        );
+
+        const totalPayments = await db.collection('payments').countDocuments({ userId });
+
+        res.json({
+          success: true,
+          payments: paymentsWithPolicyDetails,
+          pagination: {
+            currentPage: pageNum,
+            totalPages: Math.ceil(totalPayments / limitNum),
+            totalPayments,
+            hasNext: pageNum < Math.ceil(totalPayments / limitNum),
+            hasPrev: pageNum > 1
+          }
+        });
+
+      } catch (error) {
+        console.error('Error fetching user payments:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch payments',
+          error: error.message
+        });
+      }
+    });
+
+    // 4. GET PAYMENT DETAILS BY ID
+    app.get('/payments/:paymentId', async (req, res) => {
+      try {
+        const { paymentId } = req.params;
+
+        const payment = await db.collection('payments').findOne({ 
+          _id: new ObjectId(paymentId) 
+        });
+
+        if (!payment) {
+          return res.status(404).json({
+            success: false,
+            message: 'Payment not found'
+          });
+        }
+
+        // Get policy details
+        const policy = await policiesCollection.findOne({ _id: payment.policyId });
+
+        res.json({
+          success: true,
+          payment: {
+            ...payment,
+            policy: policy || null,
+            policyName: policy?.title || 'Unknown Policy'
+          }
+        });
+
+      } catch (error) {
+        console.error('Error fetching payment details:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch payment details',
+          error: error.message
+        });
+      }
+    });
 
 
     // Start server
