@@ -22,7 +22,29 @@ const client = new MongoClient(uri, {
   }
 });
 
- 
+// Firebase Admin Setup
+const admin = require("firebase-admin");
+const serviceAccount = require("./firebase-adminsdk-key.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+// Middleware: Verify Firebase Token
+const verifyFirebaseToken = async (req, res, next) => {
+  const authHeader = req.headers?.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).send({ error: 'Unauthorized access' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.decoded = decodedToken;
+    next();
+  } catch (error) {
+    res.status(403).send({ error: 'Forbidden access' });
+  }
+};  
 
 // ==================== GLOBAL VARIABLES FOR COLLECTIONS ====================
 let usersCollection, policiesCollection, applicationsCollection, 
@@ -789,7 +811,7 @@ async function run() {
     // ==================== STRIPE PAYMENT ROUTES ====================
     
     // 1. CREATE PAYMENT INTENT
-    app.post('/create-payment-intent', async (req, res) => {
+    app.post('/create-payment-intent',verifyFirebaseToken, verifyCustomer, async (req, res) => {
       try {
         const { amount, policyId, userId } = req.body;
         
@@ -826,143 +848,41 @@ async function run() {
     });
 
     // 2. CONFIRM PAYMENT (called after successful Stripe payment)
-    app.post('/confirm-payment', async (req, res) => {
+    app.post('/confirm-payment',verifyFirebaseToken,verifyCustomer, async (req, res) => {
       try {
-        const { 
-          paymentIntentId, 
-          policyId, 
-          userId, 
-          amount 
-        } = req.body;
+        const { paymentIntentId, policyId, amount } = req.body;
 
-        if (!paymentIntentId || !policyId || !userId || !amount) {
+        // Simple validation
+        if (!paymentIntentId || !policyId || !amount) {
           return res.status(400).json({
             success: false,
-            message: 'Missing required payment information'
+            message: 'Payment details are incomplete'
           });
         }
 
-        // Create payment record in database
-        const paymentRecord = {
+        // Create simple payment record
+        const payment = {
           paymentIntentId,
-          userId,
+          userId: req.decoded.uid,
+          userEmail: req.decoded.email,
           policyId: new ObjectId(policyId),
           amount: parseFloat(amount),
-          currency: 'usd',
           status: 'completed',
-          transactionId: `tx_${Date.now()}`,
-          paymentDate: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date()
+          paymentDate: new Date()
         };
 
-        // Insert payment record
-        const result = await db.collection('payments').insertOne(paymentRecord);
+        // Save to database
+        await paymentsCollection.insertOne(payment);
 
         res.json({
           success: true,
-          message: 'Payment confirmed successfully',
-          payment: { ...paymentRecord, _id: result.insertedId }
+          message: 'Payment confirmed successfully'
         });
 
       } catch (error) {
-        console.error('Error confirming payment:', error);
         res.status(500).json({
           success: false,
-          message: 'Failed to confirm payment',
-          error: error.message
-        });
-      }
-    });
-
-    // 3. GET USER PAYMENTS (for payment history)
-    app.get('/payments/user/:userId', async (req, res) => {
-      try {
-        const { userId } = req.params;
-        const { page = 1, limit = 10 } = req.query;
-
-        const pageNum = parseInt(page);
-        const limitNum = parseInt(limit);
-        const skip = (pageNum - 1) * limitNum;
-
-        // Get payments from payments collection
-        const payments = await db.collection('payments')
-          .find({ userId })
-          .sort({ paymentDate: -1 })
-          .skip(skip)
-          .limit(limitNum)
-          .toArray();
-
-        // Get policy details for each payment
-        const paymentsWithPolicyDetails = await Promise.all(
-          payments.map(async (payment) => {
-            const policy = await policiesCollection.findOne({ _id: payment.policyId });
-            return {
-              ...payment,
-              policy: policy || null,
-              policyName: policy?.title || 'Unknown Policy'
-            };
-          })
-        );
-
-        const totalPayments = await db.collection('payments').countDocuments({ userId });
-
-        res.json({
-          success: true,
-          payments: paymentsWithPolicyDetails,
-          pagination: {
-            currentPage: pageNum,
-            totalPages: Math.ceil(totalPayments / limitNum),
-            totalPayments,
-            hasNext: pageNum < Math.ceil(totalPayments / limitNum),
-            hasPrev: pageNum > 1
-          }
-        });
-
-      } catch (error) {
-        console.error('Error fetching user payments:', error);
-        res.status(500).json({
-          success: false,
-          message: 'Failed to fetch payments',
-          error: error.message
-        });
-      }
-    });
-
-    // 4. GET PAYMENT DETAILS BY ID
-    app.get('/payments/:paymentId', async (req, res) => {
-      try {
-        const { paymentId } = req.params;
-
-        const payment = await db.collection('payments').findOne({ 
-          _id: new ObjectId(paymentId) 
-        });
-
-        if (!payment) {
-          return res.status(404).json({
-            success: false,
-            message: 'Payment not found'
-          });
-        }
-
-        // Get policy details
-        const policy = await policiesCollection.findOne({ _id: payment.policyId });
-
-        res.json({
-          success: true,
-          payment: {
-            ...payment,
-            policy: policy || null,
-            policyName: policy?.title || 'Unknown Policy'
-          }
-        });
-
-      } catch (error) {
-        console.error('Error fetching payment details:', error);
-        res.status(500).json({
-          success: false,
-          message: 'Failed to fetch payment details',
-          error: error.message
+          message: 'Payment confirmation failed'
         });
       }
     });
@@ -970,8 +890,8 @@ async function run() {
 
     // ==================== UPDATED PROTECTED ROUTES ====================
 
-    // ADMIN ONLY - Create Policy
-    app.post('/admin/policies', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - Create Policy 
+    app.post('/admin/policies', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const policyData = req.body;
 
@@ -1016,8 +936,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - Delete Policy
-    app.delete('/admin/policies/:id', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - Delete Policy 
+    app.delete('/admin/policies/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const result = await policiesCollection.deleteOne({ _id: new ObjectId(id) });
@@ -1041,8 +961,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - Update Policy
-    app.put('/admin/policies/:id', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - Update Policy 
+    app.put('/admin/policies/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const updateData = { 
@@ -1081,8 +1001,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - View All Applications
-    app.get('/admin/applications', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - View All Applications 
+    app.get('/admin/applications', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const applications = await applicationsCollection
           .find({})
@@ -1102,8 +1022,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - View All Payments
-    app.get('/admin/payments', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - View All Payments 
+    app.get('/admin/payments', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const payments = await paymentsCollection
           .find({})
@@ -1124,8 +1044,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - View All Users
-    app.get('/admin/users', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - View All Users 
+    app.get('/admin/users', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const users = await usersCollection
           .find({})
@@ -1146,8 +1066,8 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - Role Management
-    app.patch('/admin/users/:targetUserId/role', verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - Role Management 
+    app.patch('/admin/users/:targetUserId/role', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { targetUserId } = req.params;
         const { newRole } = req.body;
@@ -1192,8 +1112,8 @@ async function run() {
       }
     });
 
-    // CUSTOMER ONLY - Submit Application
-    app.post('/customer/applications', verifyCustomer, async (req, res) => {
+    // CUSTOMER ONLY - Submit Application 
+    app.post('/customer/applications', verifyFirebaseToken, verifyCustomer, async (req, res) => {
       try {
         const applicationData = req.body;
         
@@ -1217,7 +1137,8 @@ async function run() {
 
         const newApplication = {
           ...applicationData,
-          userId: req.user.uid, // From middleware
+          userId: req.user.uid, // From role middleware
+          userEmail: req.decoded.email, // From Firebase token
           policyId: new ObjectId(applicationData.policyId),
           submittedAt: new Date(),
           createdAt: new Date(),
@@ -1245,8 +1166,8 @@ async function run() {
       }
     });
 
-    // CUSTOMER ONLY - Create Payment Intent
-    app.post('/customer/create-payment-intent', verifyCustomer, async (req, res) => {
+    // CUSTOMER ONLY - Create Payment Intent 
+    app.post('/customer/create-payment-intent', verifyFirebaseToken, verifyCustomer, async (req, res) => {
       try {
         const { amount, policyId } = req.body;
         
@@ -1262,7 +1183,8 @@ async function run() {
           currency: 'usd',
           metadata: {
             policyId,
-            userId: req.user.uid
+            userId: req.user.uid,
+            userEmail: req.decoded.email
           }
         });
 
@@ -1281,8 +1203,8 @@ async function run() {
       }
     });
 
-    // CUSTOMER ONLY - Get Own Applications
-    app.get('/customer/applications', verifyCustomer, async (req, res) => {
+    // CUSTOMER ONLY - Get Own Applications 
+    app.get('/customer/applications', verifyFirebaseToken, verifyCustomer, async (req, res) => {
       try {
         const applications = await applicationsCollection
           .find({ userId: req.user.uid })
@@ -1313,8 +1235,8 @@ async function run() {
       }
     });
 
-    // CUSTOMER ONLY - Get Own Payments
-    app.get('/customer/payments', verifyCustomer, async (req, res) => {
+    // CUSTOMER ONLY - Get Own Payments 
+    app.get('/customer/payments', verifyFirebaseToken, verifyCustomer, async (req, res) => {
       try {
         const payments = await paymentsCollection
           .find({ userId: req.user.uid })
@@ -1330,6 +1252,203 @@ async function run() {
         res.status(500).json({
           success: false,
           message: 'Failed to fetch customer payments'
+        });
+      }
+    });
+
+    // AGENT ONLY - View Applications ( Agent Role) - if you add this later
+    app.get('/agent/applications', verifyFirebaseToken, verifyAgent, async (req, res) => {
+      try {
+        const applications = await applicationsCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.json({ 
+          success: true, 
+          applications,
+          message: 'Applications fetched by agent'
+        });
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Failed to fetch applications' 
+        });
+      }
+    });
+
+    // AGENT ONLY - Update Application Status
+    app.patch('/agent/applications/:id/status', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const validStatuses = ['pending', 'approved', 'rejected', 'processing'];
+        
+        if (!validStatuses.includes(status)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid status'
+          });
+        }
+
+        const result = await applicationsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { 
+            $set: { 
+              status, 
+              updatedAt: new Date(),
+              updatedBy: req.user.uid,
+              updatedByEmail: req.decoded.email
+            } 
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Application not found'
+          });
+        }
+
+        res.json({
+          success: true,
+          message: `Application status updated to ${status} by agent`
+        });
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update application status'
+        });
+      }
+    });
+
+    // PROTECTED PROFILE ROUTE - Get User Profile (Firebase Token only)
+    app.get('/profile', verifyFirebaseToken, async (req, res) => {
+      try {
+        const user = await usersCollection.findOne({ uid: req.decoded.uid });
+        
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        res.json({
+          success: true,
+          user: {
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            photoURL: user.photoURL,
+            role: user.role,
+            createdAt: user.createdAt,
+            lastLogin: user.lastLogin
+          }
+        });
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch profile'
+        });
+      }
+    });
+
+    // PROTECTED PROFILE UPDATE - Update User Profile (Firebase Token only)
+    app.patch('/profile', verifyFirebaseToken, async (req, res) => {
+      try {
+        const { displayName, photoURL } = req.body;
+
+        if (!displayName?.trim()) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Display name is required' 
+          });
+        }
+
+        const result = await usersCollection.updateOne(
+          { uid: req.decoded.uid },
+          { 
+            $set: { 
+              displayName: displayName.trim(), 
+              photoURL, 
+              updatedAt: new Date() 
+            } 
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+
+        const updatedUser = await usersCollection.findOne({ uid: req.decoded.uid });
+
+        res.json({ 
+          success: true, 
+          message: 'Profile updated successfully', 
+          user: updatedUser 
+        });
+
+      } catch (error) {
+        res.status(500).json({ 
+          success: false, 
+          message: 'Profile update failed' 
+        });
+      }
+    });
+
+    // PROTECTED PAYMENT CONFIRMATION - Confirm Payment (Firebase Token only)
+    app.post('/confirm-payment', verifyFirebaseToken, async (req, res) => {
+      try {
+        const { 
+          paymentIntentId, 
+          policyId, 
+          amount 
+        } = req.body;
+
+        if (!paymentIntentId || !policyId || !amount) {
+          return res.status(400).json({
+            success: false,
+            message: 'Missing required payment information'
+          });
+        }
+
+        // Create payment record in database
+        const paymentRecord = {
+          paymentIntentId,
+          userId: req.decoded.uid, // From Firebase token
+          userEmail: req.decoded.email, // From Firebase token
+          policyId: new ObjectId(policyId),
+          amount: parseFloat(amount),
+          currency: 'usd',
+          status: 'completed',
+          transactionId: `tx_${Date.now()}`,
+          paymentDate: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        // Insert payment record
+        const result = await paymentsCollection.insertOne(paymentRecord);
+
+        res.json({
+          success: true,
+          message: 'Payment confirmed successfully',
+          payment: { ...paymentRecord, _id: result.insertedId }
+        });
+
+      } catch (error) {
+        console.error('Error confirming payment:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to confirm payment',
+          error: error.message
         });
       }
     });
