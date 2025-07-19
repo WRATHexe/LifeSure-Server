@@ -1272,7 +1272,7 @@ async function run() {
     });
 
     // AGENT ONLY - Update Application Status
-    app.patch('/agent/applications/:id/status', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    app.patch('/agent/applications/:id/status', verifyFirebaseToken, verifyAgent, async (req, res) => {
       try {
         const { id } = req.params;
         const { status } = req.body;
@@ -1317,6 +1317,41 @@ async function run() {
         });
       }
     });
+
+    // AGENT ONLY - Get Assigned Customers
+    app.get('/agent/customers', verifyFirebaseToken, verifyAgent, async (req, res) => {
+      try {
+        // Find all applications assigned to this agent, newest first
+        const applications = await applicationsCollection
+          .find({ assignedAgent: req.user.uid })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // Group by userId, keep latest application for each customer
+        const customerMap = new Map();
+        for (const app of applications) {
+          if (!customerMap.has(app.userId)) {
+            const user = await usersCollection.findOne({ uid: app.userId });
+            customerMap.set(app.userId, {
+              _id: app._id, // Add application _id for reference
+              userId: app.userId,
+              name: user?.displayName || user?.name || app.userEmail,
+              email: app.userEmail,
+              policies: [app.policyName],
+              status: app.status,
+            });
+          } else {
+            const customer = customerMap.get(app.userId);
+            customer.policies.push(app.policyName);
+          }
+        }
+        const customers = Array.from(customerMap.values());
+        res.json({ success: true, customers });
+      } catch (error) {
+        res.status(500).json({ success: false, message: "Failed to fetch customers" });
+      }
+    });
+    
 
     // PROTECTED PROFILE ROUTE - Get User Profile (Firebase Token only)
     app.get('/profile', verifyFirebaseToken, async (req, res) => {
@@ -1738,44 +1773,6 @@ async function run() {
         res.json({ success: true, message: 'Agent assigned successfully' });
       } catch (error) {
         res.status(500).json({ success: false, message: 'Failed to assign agent' });
-      }
-    });
-
-    // ADMIN/AGENT - Update Application Status
-    app.patch('/applications/:id/status', verifyFirebaseToken, async (req, res) => {
-      try {
-        const { id } = req.params;
-        const { status } = req.body;
-
-        const validStatuses = ['pending', 'approved', 'rejected', 'processing'];
-        if (!validStatuses.includes(status)) {
-          return res.status(400).json({ success: false, message: 'Invalid status' });
-        }
-
-        const user = await usersCollection.findOne({ uid: req.decoded.uid });
-        if (!user || !['admin', 'agent'].includes(user.role)) {
-          return res.status(403).json({ success: false, message: 'Access denied' });
-        }
-
-        const result = await applicationsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status,
-              updatedAt: new Date(),
-              updatedBy: req.decoded.uid,
-              updatedByEmail: req.decoded.email
-            }
-          }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({ success: false, message: 'Application not found' });
-        }
-
-        res.json({ success: true, message: `Application status updated to ${status}` });
-      } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to update application status' });
       }
     });
 
