@@ -1,12 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-
-
-const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
 const app = express();
 const PORT = process.env.PORT ||3000;
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -56,8 +54,8 @@ let usersCollection, policiesCollection, applicationsCollection,
 // 1. VERIFY ADMIN ROLE
 const verifyAdmin = async (req, res, next) => {
   try {
-    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-    
+    // Use UID from Firebase token
+    const userId = req.decoded?.uid;
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -66,7 +64,7 @@ const verifyAdmin = async (req, res, next) => {
     }
 
     const user = await usersCollection.findOne({ uid: userId });
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -95,8 +93,7 @@ const verifyAdmin = async (req, res, next) => {
 // 2. VERIFY AGENT ROLE
 const verifyAgent = async (req, res, next) => {
   try {
-    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-    
+    const userId = req.decoded?.uid;
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -105,7 +102,7 @@ const verifyAgent = async (req, res, next) => {
     }
 
     const user = await usersCollection.findOne({ uid: userId });
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -134,8 +131,7 @@ const verifyAgent = async (req, res, next) => {
 // 3. VERIFY CUSTOMER ROLE
 const verifyCustomer = async (req, res, next) => {
   try {
-    const userId = req.body?.userId || req.params?.userId || req.query?.userId;
-    
+    const userId = req.decoded?.uid;
     if (!userId) {
       return res.status(401).json({
         success: false,
@@ -144,7 +140,7 @@ const verifyCustomer = async (req, res, next) => {
     }
 
     const user = await usersCollection.findOne({ uid: userId });
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -285,7 +281,7 @@ async function run() {
     // ==================== POLICY CRUD APIs ====================
     
     // 1. ADD POLICY (CREATE)
-    app.post('/policies', async (req, res) => {
+    app.post('/policies', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const policyData = req.body;
 
@@ -471,7 +467,7 @@ async function run() {
 
 
     // 4. EDIT POLICY (UPDATE)
-    app.put('/policies/:id', async (req, res) => {
+    app.put('/policies/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const updateData = { ...req.body };
@@ -508,7 +504,7 @@ async function run() {
     });
 
     // 5. DELETE POLICY (DELETE)
-    app.delete('/policies/:id', async (req, res) => {
+    app.delete('/policies/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
 
@@ -539,83 +535,44 @@ async function run() {
     });
 
     // ==================== APPLICATION ROUTES ====================
-    app.post('/applications', async (req, res) => {
-      try {
-        const applicationData = req.body;
-        
-        // Simple validation - just check if required data exists
-        if (!applicationData.userId || !applicationData.policyId) {
-          return res.status(400).json({
-            success: false,
-            message: 'User ID and Policy ID are required'
-          });
-        }
-
-        // Check if policy exists
-        const policy = await policiesCollection.findOne({ 
-          _id: new ObjectId(applicationData.policyId) 
-        });
-        
-        if (!policy) {
-          return res.status(404).json({
-            success: false,
-            message: 'Policy not found'
-          });
-        }
-
-        // Simply store the entire application data as received from frontend
-        const newApplication = {
-          ...applicationData,  // This includes all form data
-          policyId: new ObjectId(applicationData.policyId),
-          submittedAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
-
-        // Insert application
-        const result = await applicationsCollection.insertOne(newApplication);
-        
-        // Update policy count
-        await policiesCollection.updateOne(
-          { _id: new ObjectId(applicationData.policyId) },
-          { $inc: { applicationsCount: 1 } }
-        );
-
-        res.status(201).json({
-          success: true,
-          message: 'Application submitted successfully',
-          application: { ...newApplication, _id: result.insertedId }
-        });
-
-      } catch (error) { // ✅ Fixed: Added error parameter
-        console.error('Error submitting application:', error);
-        res.status(500).json({
-          success: false,
-          message: 'Failed to submit application',
-          error: error.message
-        });
-      }
-    });
     
     // GET all applications (for admin)
-    app.get('/applications', async (req, res) => {
+    app.get('/applications', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
-        const applications = await applicationsCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray();
+        const applications = await applicationsCollection.aggregate([
+          {
+            $lookup: {
+              from: "policies",
+              localField: "policyId",
+              foreignField: "_id",
+              as: "policyInfo"
+            }
+          },
+          {
+            $unwind: {
+              path: "$policyInfo",
+              preserveNullAndEmptyArrays: true
+            }
+          },
+          {
+            $addFields: {
+              policyName: "$policyInfo.title"
+            }
+          },
+          {
+            $sort: { createdAt: -1 }
+          }
+        ]).toArray();
 
         res.json({
           success: true,
-          applications
+          applications,
+          message: 'All applications fetched by admin'
         });
-
       } catch (error) {
-        console.error('Error fetching applications:', error);
         res.status(500).json({
           success: false,
-          message: 'Failed to fetch applications',
-          error: error.message
+          message: 'Failed to fetch applications'
         });
       }
     });
@@ -662,7 +619,7 @@ async function run() {
 
     // ==================== REVIEW ROUTES ====================
     // Submit review for a policy
-    app.post('/reviews', async (req, res) => {
+    app.post('/reviews',verifyFirebaseToken, async (req, res) => {
       try {
         const reviewData = req.body;
         
@@ -757,14 +714,12 @@ async function run() {
     // ==================== USER PROFILE ROUTES ====================
     
     // 1. GET USER PROFILE
-    app.get('/users/:uid', async (req, res) => {
+    app.get('/users/:uid', verifyFirebaseToken, async (req, res) => {
       try {
         const user = await usersCollection.findOne({ uid: req.params.uid });
-        
         if (!user) {
           return res.status(404).json({ success: false, message: 'User not found' });
         }
-
         res.json({ success: true, user });
 
       } catch (error) {
@@ -773,7 +728,7 @@ async function run() {
     });
 
     // 2. UPDATE USER PROFILE (Super Simple)
-    app.patch('/users/:uid/profile', async (req, res) => {
+    app.patch('/users/:uid/profile',verifyFirebaseToken, async (req, res) => {
       try {
         const { displayName, photoURL } = req.body;
 
@@ -1006,20 +961,40 @@ async function run() {
     // ADMIN ONLY - View All Applications 
     app.get('/admin/applications', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
-        const applications = await applicationsCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray();
+        const applications = await applicationsCollection.aggregate([
+          {
+            $lookup: {
+              from: "policies",
+              localField: "policyId",
+              foreignField: "_id",
+              as: "policyInfo"
+            }
+          },
+          {
+            $unwind: {
+              path: "$policyInfo",
+              preserveNullAndEmptyArrays: true
+            }
+          },
+          {
+            $addFields: {
+              policyName: "$policyInfo.title"
+            }
+          },
+          {
+            $sort: { createdAt: -1 }
+          }
+        ]).toArray();
 
-        res.json({ 
-          success: true, 
+        res.json({
+          success: true,
           applications,
           message: 'All applications fetched by admin'
         });
       } catch (error) {
-        res.status(500).json({ 
-          success: false, 
-          message: 'Failed to fetch applications' 
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch applications'
         });
       }
     });
@@ -1072,11 +1047,10 @@ async function run() {
     app.patch('/admin/users/:targetUserId/role', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { targetUserId } = req.params;
-        const { newRole } = req.body;
+        const { Role } = req.body;
 
         const validRoles = ['admin', 'agent', 'customer'];
-        
-        if (!validRoles.includes(newRole)) {
+        if (!validRoles.includes(Role)) {
           return res.status(400).json({
             success: false,
             message: 'Invalid role. Must be admin, agent, or customer'
@@ -1087,7 +1061,7 @@ async function run() {
           { uid: targetUserId },
           { 
             $set: { 
-              role: newRole, 
+              role: Role, 
               updatedAt: new Date(),
               updatedBy: req.user.uid
             } 
@@ -1103,7 +1077,7 @@ async function run() {
 
         res.json({
           success: true,
-          message: `User role updated to ${newRole} by admin`
+          message: `User role updated to ${Role} by admin`
         });
 
       } catch (error) {
@@ -1114,11 +1088,17 @@ async function run() {
       }
     });
 
-    // CUSTOMER ONLY - Submit Application 
-    app.post('/customer/applications', verifyFirebaseToken, verifyCustomer, async (req, res) => {
+    //Submit Application 
+    app.post('/customer/applications', verifyFirebaseToken, async (req, res) => {
       try {
         const applicationData = req.body;
-        
+
+        // Fetch user info for all roles
+        const user = await usersCollection.findOne({ uid: req.decoded.uid });
+        if (!user) {
+          return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
         if (!applicationData.policyId) {
           return res.status(400).json({
             success: false,
@@ -1126,10 +1106,19 @@ async function run() {
           });
         }
 
-        const policy = await policiesCollection.findOne({ 
-          _id: new ObjectId(applicationData.policyId) 
-        });
-        
+        // Convert policyId to ObjectId and handle invalid format
+        let policyObjectId;
+        try {
+          policyObjectId = new ObjectId(applicationData.policyId);
+        } catch (err) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid Policy ID format'
+          });
+        }
+
+        const policy = await policiesCollection.findOne({ _id: policyObjectId });
+
         if (!policy) {
           return res.status(404).json({
             success: false,
@@ -1139,18 +1128,19 @@ async function run() {
 
         const newApplication = {
           ...applicationData,
-          userId: req.user.uid, // From role middleware
-          userEmail: req.decoded.email, // From Firebase token
-          policyId: new ObjectId(applicationData.policyId),
+          userId: user.uid,
+          userEmail: user.email,
+          policyId: policyObjectId,
+          policyName: policy.title,
           submittedAt: new Date(),
           createdAt: new Date(),
           updatedAt: new Date()
         };
 
         const result = await applicationsCollection.insertOne(newApplication);
-        
+
         await policiesCollection.updateOne(
-          { _id: new ObjectId(applicationData.policyId) },
+          { _id: policyObjectId },
           { $inc: { applicationsCount: 1 } }
         );
 
@@ -1161,9 +1151,11 @@ async function run() {
         });
 
       } catch (error) {
-        res.status(500).json({ 
-          success: false, 
-          message: 'Failed to submit application' 
+        console.error('Error submitting application:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to submit application',
+          error: error.message
         });
       }
     });
@@ -1884,34 +1876,13 @@ async function run() {
 
         res.json({
           success: true,
-          message: 'Application updated successfully'
+          message: 'Application status updated successfully'
         });
 
       } catch (error) {
         res.status(500).json({
           success: false,
-          message: 'Failed to update application'
-        });
-      }
-    });
-
-    // GET ALL AGENTS (for Applications.jsx dropdown)
-    app.get('/agents', verifyFirebaseToken, verifyAdmin, async (req, res) => {
-      try {
-        const agents = await usersCollection
-          .find({ role: 'agent' })
-          .project({ uid: 1, displayName: 1, email: 1 })
-          .toArray();
-
-        res.json({
-          success: true,
-          agents
-        });
-
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to fetch agents'
+          message: 'Failed to update application status'
         });
       }
     });
