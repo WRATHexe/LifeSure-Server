@@ -46,8 +46,7 @@ const verifyFirebaseToken = async (req, res, next) => {
 
 // ==================== GLOBAL VARIABLES FOR COLLECTIONS ====================
 let usersCollection, policiesCollection, applicationsCollection, 
-    blogsCollection, reviewsCollection, transactionsCollection, 
-    newsletterCollection, paymentsCollection, claimsCollection, faqsCollection;
+    blogsCollection, reviewsCollection, newsletterCollection, paymentsCollection, claimsCollection;
 
 // ==================== SIMPLE ROLE MIDDLEWARE ====================
 
@@ -181,11 +180,9 @@ async function run() {
     applicationsCollection = db.collection("applications");
     blogsCollection = db.collection("blogs");
     reviewsCollection = db.collection("reviews");
-    transactionsCollection = db.collection("transactions");
     newsletterCollection = db.collection("newsletter");
     paymentsCollection = db.collection("payments");
     claimsCollection = db.collection("claims");
-    faqsCollection = db.collection("faqs");
 
 
 
@@ -196,20 +193,6 @@ async function run() {
     // Basic route
     app.get('/', (req, res) => {
       res.send('LifeSure Server is running successfully!');
-    });
-
-    // Test route to check collections
-    app.get('/test', async (req, res) => {
-      try {
-        const collections = await db.listCollections().toArray();
-        res.json({ 
-          message: "Database connected successfully!", 
-          collections: collections.map(col => col.name),
-          timestamp: new Date()
-        });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
     });
 
     // ==================== USER ROUTES ====================
@@ -683,22 +666,42 @@ async function run() {
     app.get('/reviews', async (req, res) => {
       try {
         const { policyId, limit = 10 } = req.query;
-        
         let query = { isApproved: true };
-        
         if (policyId) {
           query.policyId = new ObjectId(policyId);
         }
 
+        // Fetch reviews
         const reviews = await reviewsCollection
           .find(query)
           .sort({ createdAt: -1 })
           .limit(parseInt(limit))
           .toArray();
 
+        // Attach user info and policy name
+        const reviewsWithUser = await Promise.all(
+          reviews.map(async (review) => {
+            // Get user info
+            let user = null;
+            if (review.userId) {
+              user = await usersCollection.findOne({ uid: review.userId });
+            }
+            // Get policy info
+            let policy = null;
+            if (review.policyId) {
+              policy = await policiesCollection.findOne({ _id: review.policyId });
+            }
+            return {
+              ...review,
+              user: user ? { uid: user.uid, displayName: user.displayName, photoURL: user.photoURL } : null,
+              policy: policy ? { _id: policy._id, title: policy.title } : null
+            };
+          })
+        );
+
         res.json({
           success: true,
-          reviews
+          reviews: reviewsWithUser
         });
 
       } catch (error) {
@@ -751,31 +754,44 @@ async function run() {
     });
 
     // 3. UPDATE LAST LOGIN
-    app.patch('/users/:uid/last-login', async (req, res) => {
+    app.patch('/users/:uid/last-login', verifyFirebaseToken, async (req, res) => {
       try {
-        await usersCollection.updateOne(
+        const result = await usersCollection.updateOne(
           { uid: req.params.uid },
           { $set: { lastLogin: new Date() } }
         );
-
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ success: false, message: 'User not found' });
+        }
         res.json({ success: true, message: 'Last login updated' });
-
       } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to update' });
+        console.error('Error updating last login:', error);
+        res.status(500).json({ success: false, message: 'Failed to update last login' });
       }
     });
 
     // ==================== STRIPE PAYMENT ROUTES ====================
-    
-    // 1. CREATE PAYMENT INTENT
-    app.post('/create-payment-intent',verifyFirebaseToken, verifyCustomer, async (req, res) => {
+    // Get single application by ID (protected route)
+    app.get('/applications/:id', verifyFirebaseToken, async (req, res) => {
       try {
-        const { amount, policyId, userId } = req.body;
-        
-        if (!amount || !policyId || !userId) {
+        const { id } = req.params;
+        const application = await applicationsCollection.findOne({ _id: new ObjectId(id) });
+        if (!application) {
+          return res.status(404).json({ success: false, message: 'Application not found' });
+        }
+        res.json({ success: true, application });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to fetch application' });
+      }
+    });
+    // 1. CREATE PAYMENT INTENT
+    app.post('/create-payment-intent', verifyFirebaseToken, verifyCustomer, async (req, res) => {
+      try {
+        const { amount, policyId } = req.body;
+        if (!amount || !policyId) {
           return res.status(400).json({
             success: false,
-            message: 'Amount, Policy ID, and User ID are required'
+            message: 'Amount and Policy ID are required'
           });
         }
 
@@ -784,7 +800,7 @@ async function run() {
           currency: 'usd',
           metadata: {
             policyId,
-            userId
+            userId: req.user.uid || req.decoded.uid
           }
         });
 
@@ -805,42 +821,31 @@ async function run() {
     });
 
     // 2. CONFIRM PAYMENT (called after successful Stripe payment)
-    app.post('/confirm-payment',verifyFirebaseToken,verifyCustomer, async (req, res) => {
+    app.post('/confirm-payment', verifyFirebaseToken, async (req, res) => {
       try {
-        const { paymentIntentId, policyId, amount } = req.body;
+        const { paymentIntentId, policyId, userId, amount } = req.body;
 
-        // Simple validation
-        if (!paymentIntentId || !policyId || !amount) {
+        if (!paymentIntentId || !policyId || !userId || !amount) {
           return res.status(400).json({
             success: false,
-            message: 'Payment details are incomplete'
+            message: 'Missing required payment information'
           });
         }
 
-        // Create simple payment record
-        const payment = {
+        await paymentsCollection.insertOne({
           paymentIntentId,
-          userId: req.decoded.uid,
-          userEmail: req.decoded.email,
+          userId,
           policyId: new ObjectId(policyId),
           amount: parseFloat(amount),
           status: 'completed',
-          paymentDate: new Date()
-        };
-
-        // Save to database
-        await paymentsCollection.insertOne(payment);
-
-        res.json({
-          success: true,
-          message: 'Payment confirmed successfully'
+          paymentDate: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
         });
 
+        res.json({ success: true, message: 'Payment recorded' });
       } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Payment confirmation failed'
-        });
+        res.status(500).json({ success: false, message: 'Failed to record payment' });
       }
     });
 
@@ -999,24 +1004,40 @@ async function run() {
       }
     });
 
-    // ADMIN ONLY - View All Payments 
-    app.get('/admin/payments', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    // ADMIN ONLY - View All Transactions (alias for payments, with policy name)
+    app.get('/admin/transactions', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const payments = await paymentsCollection
           .find({})
           .sort({ paymentDate: -1 })
           .toArray();
 
+        // Attach policy name for each transaction
+        const paymentsWithPolicy = await Promise.all(
+          payments.map(async (payment) => {
+            let policyName = "Unknown Policy";
+            if (payment.policyId) {
+              const policy = await policiesCollection.findOne({ _id: payment.policyId });
+              if (policy) policyName = policy.title;
+            }
+            return {
+              ...payment,
+              policyName,
+            };
+          })
+        );
+
         res.json({
           success: true,
-          payments,
-          message: 'All payments fetched by admin'
+          transactions: paymentsWithPolicy,
+          message: 'All transactions fetched by admin'
         });
 
       } catch (error) {
         res.status(500).json({
           success: false,
-          message: 'Failed to fetch payments'
+          message: 'Failed to fetch transactions',
+          error: error.message
         });
       }
     });
@@ -1132,6 +1153,7 @@ async function run() {
           userEmail: user.email,
           policyId: policyObjectId,
           policyName: policy.title,
+          basePremium: policy.basePremium,
           submittedAt: new Date(),
           createdAt: new Date(),
           updatedAt: new Date()
@@ -1249,6 +1271,48 @@ async function run() {
         });
       }
     });
+    // ...existing code...
+
+    app.get('/customer/payment-status', verifyFirebaseToken, verifyCustomer, async (req, res) => {
+      try {
+        // 1. Get all approved applications for this user
+        const applications = await applicationsCollection
+          .find({ userId: req.user.uid, status: 'approved' })
+          .toArray();
+
+        // 2. For each, check if payment exists
+        const paymentStatusList = await Promise.all(
+          applications.map(async (app) => {
+            const payment = await paymentsCollection.findOne({
+              userId: req.user.uid,
+              policyId: app.policyId,
+              status: 'completed'
+            });
+            return {
+              _id: app._id.toString(), // <-- ADD THIS LINE
+              policyId: app.policyId.toString(),
+              policyName: app.policyName,
+              amount: app.basePremium,
+              frequency: app.frequency || 'monthly',
+              dueDate: app.dueDate || app.createdAt || new Date(),
+              status: payment ? 'paid' : 'due',
+              lastPayment: payment?.paymentDate || null,
+              paymentHistory: payment ? [payment] : [],
+            };
+          })
+        );
+
+        res.json({
+          success: true,
+          payments: paymentStatusList
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch payment status'
+        });
+      }
+    });
 
     // AGENT ONLY - View Applications ( Agent Role) - if you add this later
     app.get('/agent/applications', verifyFirebaseToken, verifyAgent, async (req, res) => {
@@ -1353,7 +1417,7 @@ async function run() {
     });
     
 
-    // PROTECTED PROFILE ROUTE - Get User Profile (Firebase Token only)
+    // PROTECTED PROFILE ROUTTE - Get User Profile (Firebase Token only)
     app.get('/profile', verifyFirebaseToken, async (req, res) => {
       try {
         const user = await usersCollection.findOne({ uid: req.decoded.uid });
@@ -1438,10 +1502,11 @@ async function run() {
         const { 
           paymentIntentId, 
           policyId, 
+          userId, 
           amount 
         } = req.body;
 
-        if (!paymentIntentId || !policyId || !amount) {
+        if (!paymentIntentId || !policyId || !userId || !amount) {
           return res.status(400).json({
             success: false,
             message: 'Missing required payment information'
@@ -1585,34 +1650,40 @@ async function run() {
 
     // CUSTOMER - Apply to become Agent
     app.post('/apply-agent', verifyFirebaseToken, verifyCustomer, async (req, res) => {
-      try {
-        const { experience, qualifications, reason } = req.body;
+  try {
+    const { experience, qualifications, reason, specialties } = req.body;
 
-        const existingApplication = await usersCollection.findOne({
-          uid: req.user.uid,
-          agentApplicationStatus: { $exists: true }
-        });
-
-        if (existingApplication) {
-          return res.status(400).json({ success: false, message: 'Agent application already submitted' });
-        }
-
-        await usersCollection.updateOne(
-          { uid: req.user.uid },
-          {
-            $set: {
-              agentApplicationStatus: 'pending',
-              agentApplication: { experience, qualifications, reason, appliedAt: new Date() },
-              updatedAt: new Date()
-            }
-          }
-        );
-
-        res.json({ success: true, message: 'Agent application submitted successfully' });
-      } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to submit agent application' });
-      }
+    const existingApplication = await usersCollection.findOne({
+      uid: req.user.uid,
+      agentApplicationStatus: { $exists: true }
     });
+
+    if (existingApplication) {
+      return res.status(400).json({ success: false, message: 'Agent application already submitted' });
+    }
+
+    await usersCollection.updateOne(
+      { uid: req.user.uid },
+      {
+        $set: {
+          agentApplicationStatus: 'pending',
+          agentApplication: {
+            experience,
+            qualifications,
+            reason,
+            specialties, // <-- Save specialties
+            appliedAt: new Date()
+          },
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({ success: true, message: 'Agent application submitted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to submit agent application' });
+  }
+});
 
     // ADMIN ONLY - Get Agent Applications
     app.get('/admin/agent-applications', verifyFirebaseToken, verifyAdmin, async (req, res) => {
@@ -1633,7 +1704,7 @@ async function run() {
     app.patch('/admin/agent-applications/:userId', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
         const { userId } = req.params;
-        const { action } = req.body;
+        const { action, feedback } = req.body;
 
         if (!['approve', 'reject'].includes(action)) {
           return res.status(400).json({ success: false, message: 'Invalid action. Use approve or reject' });
@@ -1647,6 +1718,7 @@ async function run() {
         };
 
         if (action === 'approve') updateData.role = 'agent';
+        if (action === 'reject' && feedback) updateData.agentRejectionFeedback = feedback;
 
         const result = await usersCollection.updateOne({ uid: userId }, { $set: updateData });
 
@@ -1659,7 +1731,23 @@ async function run() {
         res.status(500).json({ success: false, message: 'Failed to process agent application' });
       }
     });
+    // ADMIN ONLY - Get all pending agent applications (for Agents.jsx tab)
+    app.get('/admin/agents/pending', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+    try {
+      // Find users with a pending agent application
+      const pending = await usersCollection
+        .find({ agentApplicationStatus: "pending" })
+        .sort({ "agentApplication.appliedAt": -1 })
+        .toArray();
 
+      res.json({
+        success: true,
+        applications: pending,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: "Failed to fetch pending agent applications" });
+    }
+    });
     // ADMIN ONLY - Get All Agents
     app.get('/admin/agents', verifyFirebaseToken, verifyAdmin, async (req, res) => {
       try {
@@ -1670,6 +1758,27 @@ async function run() {
       }
     });
 
+    // PUBLIC - Get all agents (for homepage, no auth required)
+    app.get('/agents', async (req, res) => {
+    try {
+      const agents = await usersCollection
+        .find({ role: 'agent' })
+        .sort({ "agentApplication.experience": -1 })
+        .project({ password: 0, updatedBy: 0 }) // Hide sensitive fields if needed
+        .toArray();
+
+      res.json({
+        success: true,
+        agents,
+        message: 'All agents fetched (public)'
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch agents'
+      });
+    }
+  });
     // ==================== 🏥 CLAIM REQUEST APIs ====================
 
     // CUSTOMER ONLY - Submit Claim
@@ -1936,7 +2045,7 @@ async function run() {
           {
             $set: {
               status: 'rejected',
-              rejectionReason: reason || 'No reason provided',
+              rejectionFeedback: reason || 'No reason provided', // <-- Use this field
               rejectedAt: new Date(),
               rejectedBy: req.user.uid,
               updatedAt: new Date()
@@ -2007,6 +2116,99 @@ async function run() {
       }
     });
 
+    // AGENT ONLY - Dashboard Stats
+    app.get('/agent/dashboard-stats', verifyFirebaseToken, verifyAgent, async (req, res) => {
+      try {
+        const agentId = req.user.uid;
+
+        // Assigned customers: unique userIds from applications assigned to this agent
+        const assignedApplications = await applicationsCollection.find({ assignedAgent: agentId }).toArray();
+        const assignedCustomers = new Set(assignedApplications.map(app => app.userId)).size;
+
+        // Total applications assigned to this agent
+        const totalApplications = assignedApplications.length;
+
+        // Pending applications assigned to this agent
+        const pendingApplications = assignedApplications.filter(app => app.status === "pending").length;
+
+        // Approved applications assigned to this agent
+        const approvedApplications = assignedApplications.filter(app => app.status === "approved").length;
+
+        res.json({
+          success: true,
+          stats: {
+            assignedCustomers,
+            totalApplications,
+            pendingApplications,
+            approvedApplications,
+          }
+        });
+      } catch (error) {
+        res.status(500).json({ success: false, message: "Failed to fetch agent dashboard stats" });
+      }
+    });
+
+    app.get('/customer/dashboard-stats', verifyFirebaseToken, verifyCustomer, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+
+    // Count active policies (approved applications)
+    const activePolicies = await applicationsCollection.countDocuments({
+      userId,
+      status: "approved"
+    });
+
+    // Sum of all completed payments
+    const payments = await paymentsCollection.find({ userId, status: "completed" }).toArray();
+    const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    // Pending claims
+    const pendingClaims = await claimsCollection.countDocuments({
+      userId,
+      status: "pending"
+    });
+
+    // Total applications
+    const totalApplications = await applicationsCollection.countDocuments({ userId });
+
+    // Recent applications (for table)
+    const applicationsRaw = await applicationsCollection
+      .find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .toArray();
+
+    // Map applications to include all relevant fields for the dashboard
+    const applications = applicationsRaw.map(app => ({
+      _id: app._id,
+      policyName: app.policyName,
+      submittedAt: app.submittedAt,
+      createdAt: app.createdAt,
+      status: app.status,
+      rejectionFeedback: app.rejectionFeedback,
+      rejectionReason: app.rejectionReason,
+      // Optionally include more fields as needed:
+      // policyId: app.policyId,
+      // basePremium: app.basePremium,
+      // etc.
+    }));
+
+    res.json({
+      success: true,
+      stats: {
+        activePolicies,
+        totalPaid,
+        pendingClaims,
+        totalApplications,
+        applications
+      }
+    });
+  } catch (error) {
+    console.error("Error in /customer/dashboard-stats:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch dashboard stats" });
+  }
+    });
+
     // ==================== 👤 USER MANAGEMENT ENHANCEMENTS ====================
 
     // DELETE USER (for user management)
@@ -2041,6 +2243,41 @@ async function run() {
           success: false,
           message: 'Failed to delete user'
         });
+      }
+    });
+
+    // PATCH: Increment blog visit count
+    app.patch('/blogs/:id/visit', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await blogsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $inc: { totalVisit: 1 } }
+        );
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ success: false, message: 'Blog not found' });
+        }
+        res.json({ success: true });
+      } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update visit count' });
+      }
+    });
+
+    // NEWSLETTER SUBSCRIPTION ENDPOINT
+    app.post('/newsletter', async (req, res) => {
+      try {
+        const { name, email } = req.body;
+        if (!name?.trim() || !email?.trim()) {
+          return res.status(400).json({ success: false, message: "Name and email required" });
+        }
+        await newsletterCollection.insertOne({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          subscribedAt: new Date(),
+        });
+        res.json({ success: true, message: "Subscribed successfully" });
+      } catch {
+        res.status(500).json({ success: false, message: "Failed to subscribe" });
       }
     });
 
